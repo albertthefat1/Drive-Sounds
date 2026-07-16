@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#080a0d" />
+  <title>Drive Sounds</title>
+  <style>
+    :root { color-scheme: dark; --bg:#080a0d; --panel:#12161c; --line:#2a3039; --accent:#f4542b; --ink:#f6f8fb; --muted:#99a4b5; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100svh; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:radial-gradient(circle at 50% -20%,#28303c 0,#080a0d 53%); color:var(--ink); }
+    main { max-width:580px; min-height:100svh; margin:auto; padding:calc(22px + env(safe-area-inset-top)) 20px calc(28px + env(safe-area-inset-bottom)); display:flex; flex-direction:column; gap:18px; }
+    header { display:flex; justify-content:space-between; align-items:center; }
+    h1 { font-size:1.1rem; letter-spacing:.12em; margin:0; text-transform:uppercase; }
+    .pill { font-size:.74rem; color:var(--muted); border:1px solid var(--line); padding:6px 9px; border-radius:999px; }
+    .speed-card { text-align:center; padding:31px 16px 24px; background:linear-gradient(135deg,#1a2029,#0e1116); border:1px solid var(--line); border-radius:26px; box-shadow:0 20px 60px #0007; }
+    #speed { font-size:clamp(5.8rem,31vw,9.8rem); font-weight:750; line-height:.84; letter-spacing:-.085em; font-variant-numeric:tabular-nums; }
+    .unit { margin-top:10px; color:var(--muted); font-size:.8rem; letter-spacing:.2em; }
+    #status { min-height:1.25em; text-align:center; color:var(--muted); font-size:.84rem; }
+    .controls { background:var(--panel); border:1px solid var(--line); border-radius:20px; padding:16px; display:grid; gap:16px; }
+    .mode-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    button, select { font:inherit; color:var(--ink); border-radius:14px; border:1px solid var(--line); background:#1b2028; min-height:50px; cursor:pointer; }
+    .mode { padding:10px; text-align:left; font-weight:650; }
+    .mode small { display:block; color:var(--muted); margin-top:3px; font-weight:400; }
+    .mode.active { border-color:var(--accent); background:#3a1d19; }
+    #start { width:100%; border:0; background:var(--accent); font-weight:800; font-size:1rem; letter-spacing:.04em; box-shadow:0 7px 25px #f4542b45; }
+    #start.running { background:#29313b; box-shadow:none; }
+    label { display:grid; grid-template-columns:1fr auto; gap:9px; color:var(--muted); font-size:.82rem; align-items:center; }
+    input[type=range] { grid-column:1 / -1; width:100%; accent-color:var(--accent); }
+    .note { margin:0; color:var(--muted); font-size:.76rem; line-height:1.45; }
+    .warning { color:#ffba83; }
+  </style>
+</head>
+<body>
+  <main>
+    <header><h1>Drive Sounds</h1><span class="pill" id="gps">GPS OFF</span></header>
+    <section class="speed-card" aria-live="polite"><div id="speed">0</div><div class="unit">MPH</div></section>
+    <div id="status">Tap Start to enable GPS and audio.</div>
+    <section class="controls">
+      <div class="mode-grid" aria-label="Sound mode">
+        <button class="mode active" data-mode="muscle"><span>Muscle</span><small>deep, rough engine</small></button>
+        <button class="mode" data-mode="ev"><span>EV Meme</span><small>sci-fi electric whine</small></button>
+      </div>
+      <label>Master volume <output id="volumeValue">55%</output><input id="volume" type="range" min="0" max="100" value="55" /></label>
+      <label>Sound response <output id="responseValue">Normal</output><input id="response" type="range" min="0" max="2" value="1" /></label>
+      <button id="start">START DRIVE SOUNDS</button>
+      <p class="note">Connect your phone to the Tesla with Bluetooth first. Keep this page open while driving; use only when it will not distract you. GPS speed is approximate and may lag.</p>
+    </section>
+  </main>
+  <script>
+  (() => {
+    const $ = s => document.querySelector(s);
+    const speedEl = $('#speed'), statusEl = $('#status'), gpsEl = $('#gps'), start = $('#start');
+    const volume = $('#volume'), response = $('#response');
+    let ctx, master, engine, lfo, filter, running = false, watchId = null, mode = 'muscle';
+    let displayedMph = 0, targetMph = 0, lastPosition = null, raf = null;
+
+    function setStatus(text, warning=false) { statusEl.textContent = text; statusEl.className = warning ? 'warning' : ''; }
+    function clamp(n, min, max) { return Math.min(max, Math.max(min, n)); }
+    function mphFromPositions(a, b) {
+      const R = 6371000, rad = Math.PI / 180;
+      const dLat = (b.latitude-a.latitude)*rad, dLon = (b.longitude-a.longitude)*rad;
+      const x = Math.sin(dLat/2)**2 + Math.cos(a.latitude*rad)*Math.cos(b.latitude*rad)*Math.sin(dLon/2)**2;
+      const meters = 2*R*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+      const seconds = (b.timestamp-a.timestamp)/1000;
+      return seconds > 0 ? meters/seconds*2.23694 : 0;
+    }
+    function audioGraph() {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      master = ctx.createGain(); master.gain.value = 0; master.connect(ctx.destination);
+      filter = ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 600; filter.Q.value = 1.5; filter.connect(master);
+      engine = ctx.createOscillator(); engine.type = 'sawtooth'; engine.frequency.value = 52; engine.connect(filter); engine.start();
+      const sub = ctx.createOscillator(); sub.type = 'sine'; sub.frequency.value = 26; sub.connect(filter); sub.start();
+      lfo = ctx.createOscillator(); const lfoGain = ctx.createGain(); lfo.frequency.value = 8; lfoGain.gain.value = 12; lfo.connect(lfoGain).connect(engine.frequency); lfo.start();
+    }
+    function updateSound() {
+      if (!ctx) return;
+      const now = ctx.currentTime, speed = clamp(displayedMph, 0, 100), sensitivity = [0.65, 1, 1.45][+response.value];
+      const vol = (volume.value / 100) * (speed < 1 ? .1 : .65);
+      if (mode === 'muscle') {
+        engine.type = 'sawtooth';
+        engine.frequency.setTargetAtTime(38 + speed * 2.1 * sensitivity, now, .13);
+        filter.frequency.setTargetAtTime(210 + speed * 22, now, .18); filter.Q.setTargetAtTime(2.8,now,.2);
+        lfo.frequency.setTargetAtTime(7 + speed*.08,now,.2);
+      } else {
+        engine.type = 'sine';
+        engine.frequency.setTargetAtTime(100 + speed * 10.5 * sensitivity, now, .11);
+        filter.frequency.setTargetAtTime(800 + speed * 35, now, .18); filter.Q.setTargetAtTime(7,now,.2);
+        lfo.frequency.setTargetAtTime(2.2 + speed*.045,now,.2);
+      }
+      master.gain.setTargetAtTime(vol, now, .15);
+    }
+    function animate() {
+      displayedMph += (targetMph - displayedMph) * .12;
+      if (Math.abs(targetMph - displayedMph) < .05) displayedMph = targetMph;
+      speedEl.textContent = String(Math.round(displayedMph)); updateSound(); raf = requestAnimationFrame(animate);
+    }
+    function onPosition(pos) {
+      const c = pos.coords;
+      let m = c.speed == null ? NaN : c.speed * 2.23694;
+      if (!Number.isFinite(m) && lastPosition) m = mphFromPositions(lastPosition, {latitude:c.latitude, longitude:c.longitude, timestamp:pos.timestamp});
+      lastPosition = {latitude:c.latitude, longitude:c.longitude, timestamp:pos.timestamp};
+      if (Number.isFinite(m)) { targetMph = clamp(m, 0, 160); gpsEl.textContent = 'GPS LIVE'; setStatus(`Accuracy ±${Math.round(c.accuracy)} m`); }
+      else setStatus('GPS has not reported speed yet.');
+    }
+    function beginGps() {
+      if (!navigator.geolocation) { setStatus('This browser does not support GPS.', true); return; }
+      watchId = navigator.geolocation.watchPosition(onPosition, err => {
+        gpsEl.textContent = 'GPS ERROR'; setStatus(err.code === 1 ? 'Location permission was denied.' : 'GPS unavailable—try outdoors.', true);
+      }, {enableHighAccuracy:true, maximumAge:1000, timeout:15000});
+    }
+    function toggle() {
+      if (!running) { audioGraph(); ctx.resume(); running = true; start.textContent = 'STOP DRIVE SOUNDS'; start.classList.add('running'); gpsEl.textContent = 'GPS STARTING'; beginGps(); animate(); }
+      else { running = false; if(watchId !== null) navigator.geolocation.clearWatch(watchId); watchId = null; cancelAnimationFrame(raf); master.gain.setTargetAtTime(0,ctx.currentTime,.08); ctx.close(); ctx = null; targetMph = displayedMph = 0; speedEl.textContent='0'; gpsEl.textContent='GPS OFF'; start.textContent='START DRIVE SOUNDS'; start.classList.remove('running'); setStatus('Stopped.'); }
+    }
+    document.querySelectorAll('.mode').forEach(btn => btn.addEventListener('click', () => { mode = btn.dataset.mode; document.querySelectorAll('.mode').forEach(x=>x.classList.toggle('active',x===btn)); updateSound(); }));
+    volume.addEventListener('input', () => { $('#volumeValue').textContent = volume.value + '%'; updateSound(); });
+    response.addEventListener('input', () => { $('#responseValue').textContent = ['Soft','Normal','Aggressive'][response.value]; updateSound(); });
+    start.addEventListener('click', toggle);
+  })();
+  </script>
+</body>
+</html>
